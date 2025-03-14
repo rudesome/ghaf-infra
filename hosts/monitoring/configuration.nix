@@ -16,7 +16,13 @@ let
 in
 {
   sops.defaultSopsFile = ./secrets.yaml;
-  sops.secrets.sshified_private_key.owner = "sshified";
+  sops.secrets = {
+    sshified_private_key.owner = "sshified";
+    loki_basic_auth.owner = "nginx";
+    # github oauth app credentials
+    github_client_id.owner = "grafana";
+    github_client_secret.owner = "grafana";
+  };
 
   imports =
     [
@@ -30,9 +36,7 @@ in
       ficolo-common
       service-openssh
       service-nginx
-      service-monitoring
       user-jrautiola
-      user-karim
     ]);
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
@@ -48,8 +52,12 @@ in
   users.users."sshified".isNormalUser = true;
 
   services.openssh.knownHosts = {
-    "65.21.20.242".publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILx4zU4gIkTY/1oKEOkf9gTJChdx/jR3lDgZ7p/c7LEK";
-    "95.217.177.197".publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICMmB3Ws5MVq0DgVu+Hth/8NhNAYEwXyz4B6FRCF6Nu2";
+    "65.21.20.242".publicKey =
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILx4zU4gIkTY/1oKEOkf9gTJChdx/jR3lDgZ7p/c7LEK";
+    "95.217.177.197".publicKey =
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICMmB3Ws5MVq0DgVu+Hth/8NhNAYEwXyz4B6FRCF6Nu2";
+    "95.216.200.85".publicKey =
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIALs+OQDrCKRIKkwTwI4MI+oYC3RTEus9cXCBcIyRHzl";
   };
 
   # runs a tiny webserver on port 8888 that tunnels requests through ssh connection
@@ -74,7 +82,10 @@ in
 
   services.monitoring = {
     metrics.enable = true;
-    logs.enable = true;
+    logs = {
+      enable = true;
+      lokiAddress = "http://${config.services.loki.configuration.server.http_listen_address}:${toString config.services.loki.configuration.server.http_listen_port}";
+    };
   };
 
   services.grafana = {
@@ -84,6 +95,13 @@ in
       server = {
         http_port = 3000;
         http_addr = "127.0.0.1";
+        domain = "monitoring.vedenemo.dev";
+        enforce_domain = true;
+
+        # the default root_url is unaware of our nginx reverse proxy,
+        # and tries using http with port 3000 as the redirect url for auth.
+        # https://github.com/grafana/grafana/issues/11817#issuecomment-387131608
+        root_url = "https://%(domain)s/";
       };
 
       # disable telemetry
@@ -92,9 +110,28 @@ in
         feedback_links_enabled = false;
       };
 
-      # allow read-only access to dashboards without login
-      # this is fine because the page is only accessible with vpn
-      "auth.anonymous".enabled = true;
+      # https://grafana.com/docs/grafana/latest/setup-grafana/configure-security/configure-security-hardening
+      security = {
+        cookie_secure = true;
+        # we cannot use 'strict' here or github oauth cannot set the login cookie
+        cookie_samesite = "lax";
+        login_cookie_name = "__Host-grafana_session";
+        strict_transport_security = true;
+      };
+
+      # github OIDC
+      "auth.github" = {
+        enabled = true;
+        client_id = "$__file{${config.sops.secrets.github_client_id.path}}";
+        client_secret = "$__file{${config.sops.secrets.github_client_secret.path}}";
+        allowed_organizations = [ "tiiuae" ];
+        allow_assign_grafana_admin = true;
+        team_ids = "7362549"; # devenv-fi
+        role_attribute_path = "contains(groups[*], '@tiiuae/devenv-fi') && 'GrafanaAdmin'";
+      };
+
+      # disable username/password auth
+      auth.disable_login_form = true;
     };
 
     provision.datasources.settings.datasources = [
@@ -120,7 +157,6 @@ in
       server = {
         http_listen_port = 3100;
         http_listen_address = "127.0.0.1";
-        log_level = "info";
       };
 
       common = {
@@ -158,6 +194,21 @@ in
     checkConfig = true;
 
     globalConfig.scrape_interval = "15s";
+
+    # blackbox exporter can ping abritrary urls for us
+    exporters.blackbox = {
+      enable = true;
+      listenAddress = "127.0.0.1";
+      configFile = pkgs.writeText "probes.yml" (
+        builtins.toJSON {
+          modules.https_success = {
+            prober = "http";
+            tcp.tls = true;
+            http.headers.User-Agent = "blackbox-exporter";
+          };
+        }
+      );
+    };
 
     scrapeConfigs = [
       {
@@ -205,12 +256,6 @@ in
               machine_name = "monitoring";
             };
           }
-          {
-            targets = [ "172.18.20.109:9100" ];
-            labels = {
-              machine_name = "binarycache";
-            };
-          }
         ];
       }
       {
@@ -230,22 +275,92 @@ in
               machine_name = "ghaf-log";
             };
           }
+          {
+            targets = [ "95.216.200.85:9100" ];
+            labels = {
+              machine_name = "ghaf-proxy";
+            };
+          }
+        ];
+      }
+      {
+        job_name = "blackbox";
+        metrics_path = "/probe";
+        params.module = [ "https_success" ];
+        relabel_configs = [
+          {
+            source_labels = [ "__address__" ];
+            target_label = "__param_target";
+          }
+          {
+            source_labels = [ "__param_target" ];
+            target_label = "instance";
+          }
+          {
+            source_labels = [ "__param_target" ];
+            target_label = "machine_name";
+          }
+          {
+            target_label = "__address__";
+            replacement = "127.0.0.1:9115";
+          }
+        ];
+        static_configs = [
+          {
+            targets = [
+              "ghaf-jenkins-controller-prod.northeurope.cloudapp.azure.com"
+              "prod-cache.vedenemo.dev"
+            ];
+            labels = {
+              env = "prod";
+            };
+          }
+          {
+            targets = [ "ghaf-jenkins-controller-dev.northeurope.cloudapp.azure.com" ];
+            labels = {
+              env = "dev";
+            };
+          }
         ];
       }
     ];
   };
 
-  services.nginx.virtualHosts."_" = {
-    default = true;
-    locations = {
-      "/" = {
+  security.acme = {
+    acceptTerms = true;
+    defaults.email = "trash@unikie.com";
+  };
+
+  services.nginx.virtualHosts =
+    let
+      grafana = {
         proxyPass = "http://127.0.0.1:${toString config.services.grafana.settings.server.http_port}";
         proxyWebsockets = true;
       };
-      "/loki" = {
+      loki = {
         proxyPass = "http://127.0.0.1:${toString config.services.loki.configuration.server.http_listen_port}/loki";
         proxyWebsockets = true;
       };
+    in
+    {
+      "monitoring.vedenemo.dev" = {
+        default = true;
+        enableACME = true;
+        forceSSL = true;
+        locations = {
+          "/" = grafana;
+          "/loki" = loki // {
+            basicAuthFile = config.sops.secrets.loki_basic_auth.path;
+          };
+        };
+      };
+
+      # no auth required when accessing through internal ip address
+      "172.18.20.108" = {
+        locations = {
+          "/" = grafana;
+          "/loki" = loki;
+        };
+      };
     };
-  };
 }

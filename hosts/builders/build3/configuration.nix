@@ -7,31 +7,33 @@
   ...
 }:
 {
-  sops.defaultSopsFile = ./secrets.yaml;
-  sops.secrets.ssh_private_key.owner = "root";
-
   imports =
     [
       ../ficolo.nix
       ../cross-compilation.nix
       ../developers.nix
-      ../yubikey.nix
       ../builders-common.nix
       inputs.sops-nix.nixosModules.sops
     ]
     ++ (with self.nixosModules; [
-      user-themisto
+      user-bmg
       user-ktu
       user-avnik
+      user-github # Remove when all GhA workflows moved to build4
+      user-remote-build # Remove when all jenkins builds moved to build4
     ]);
 
-  # build3 specific configuration
+  sops = {
+    defaultSopsFile = ./secrets.yaml;
+    secrets.ssh_private_key.owner = "root";
+  };
+
+  services.monitoring = {
+    metrics.enable = true;
+    logs.enable = true;
+  };
 
   networking.hostName = "build3";
-
-  users.users.yubimaster.openssh.authorizedKeys.keys = [
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMDfEUoARtE5ZMYofegtm3lECzaQeAktLQ2SqlHcV9jL signer"
-  ];
 
   nix.settings.trusted-users = [ "@wheel" ];
 
@@ -58,6 +60,7 @@
   };
 
   programs.ssh.knownHosts = {
-    "hetzarm.vedenemo.dev".publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILx4zU4gIkTY/1oKEOkf9gTJChdx/jR3lDgZ7p/c7LEK";
+    "hetzarm.vedenemo.dev".publicKey =
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILx4zU4gIkTY/1oKEOkf9gTJChdx/jR3lDgZ7p/c7LEK";
   };
 }

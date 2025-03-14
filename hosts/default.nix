@@ -50,11 +50,14 @@ in
     nixos-hetzarm = ./builders/hetzarm/configuration.nix;
     nixos-monitoring = ./monitoring/configuration.nix;
     nixos-himalia = ./himalia/configuration.nix;
-    nixos-testagent = ./testagent/configuration.nix;
-    nixos-testagent-dev = ./testagent-dev/configuration.nix;
+    nixos-testagent-prod = ./testagent/prod/configuration.nix;
+    nixos-testagent-dev = ./testagent/dev/configuration.nix;
+    nixos-testagent-release = ./testagent/release/configuration.nix;
     nixos-ghaf-log = ./ghaf-log/configuration.nix;
     nixos-ghaf-coverity = ./ghaf-coverity/configuration.nix;
     nixos-ghaf-proxy = ./ghaf-proxy/configuration.nix;
+    nixos-ghaf-webserver = ./ghaf-webserver/configuration.nix;
+    nixos-testagent-uae-dev = ./testagent/uae-dev/configuration.nix;
   };
 
   # Expose as flake.lib.mkNixOS.
@@ -80,11 +83,14 @@ in
         "hetzarm"
         "monitoring"
         "himalia"
-        "testagent"
+        "testagent-prod"
         "testagent-dev"
+        "testagent-release"
         "ghaf-log"
         "ghaf-coverity"
         "ghaf-proxy"
+        "ghaf-webserver"
+        "testagent-uae-dev"
       ]
   );
 }

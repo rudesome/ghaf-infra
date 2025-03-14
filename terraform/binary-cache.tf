@@ -7,7 +7,7 @@ module "binary_cache_image" {
   nix_attrpath   = ""
   nix_entrypoint = "${path.module}/custom-nixos.nix"
   nix_argstr = {
-    extraNixPublicKey = local.opts[local.conf].binary_cache_public_key
+    extraNixPublicKey = local.binary_cache_public_key
     systemName        = "az-binary-cache"
   }
 
@@ -16,6 +16,7 @@ module "binary_cache_image" {
   location               = azurerm_resource_group.infra.location
   storage_account_name   = azurerm_storage_account.vm_images.name
   storage_container_name = azurerm_storage_container.vm_images.name
+  depends_on             = [azurerm_storage_container.vm_images]
 }
 
 module "binary_cache_vm" {
@@ -30,7 +31,7 @@ module "binary_cache_vm" {
 
   virtual_machine_custom_data = join("\n", ["#cloud-config", yamlencode({
     users = [
-      for user in toset(["bmg", "flokli", "hrosten", "jrautiola", "vjuntunen", "mkaapu", "karim", "cazfi", "mika"]) : {
+      for user in toset(["bmg", "flokli", "hrosten", "jrautiola", "vjuntunen", "cazfi", "fayad", "kanyfantakis", "ctsopokis"]) : {
         name                = user
         sudo                = "ALL=(ALL) NOPASSWD:ALL"
         ssh_authorized_keys = local.ssh_keys[user]
@@ -43,7 +44,7 @@ module "binary_cache_vm" {
         "path"  = "/var/lib/azure-nix-cache-proxy/env"
       },
       {
-        content = "SITE_ADDRESS=${local.opts[local.conf].binary_cache_url}"
+        content = "SITE_ADDRESS=${local.binary_cache_url}"
         "path"  = "/var/lib/caddy/caddy.env"
       },
     ],

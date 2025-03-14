@@ -25,19 +25,15 @@
       service-openssh
       service-binary-cache
       service-nginx
-      service-monitoring
       user-jrautiola
       user-cazfi
-      user-hydra
       user-hrosten
-      user-mkaapu
       user-avnik
     ]);
 
   nix.settings = {
     # we don't want the cache to be a substitutor for itself
     substituters = lib.mkForce [ "https://cache.nixos.org/" ];
-    trusted-users = [ "hydra" ];
   };
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";

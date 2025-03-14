@@ -8,7 +8,7 @@ module "jenkins_controller_image" {
   nix_attrpath   = ""
   nix_entrypoint = "${path.module}/custom-nixos.nix"
   nix_argstr = {
-    extraNixPublicKey = local.opts[local.conf].binary_cache_public_key
+    extraNixPublicKey = local.binary_cache_public_key
     systemName        = "az-jenkins-controller"
   }
 
@@ -17,6 +17,7 @@ module "jenkins_controller_image" {
   location               = azurerm_resource_group.infra.location
   storage_account_name   = azurerm_storage_account.vm_images.name
   storage_container_name = azurerm_storage_container.vm_images.name
+  depends_on             = [azurerm_storage_container.vm_images]
 }
 
 # Create a machine using this image
@@ -32,9 +33,9 @@ module "jenkins_controller_vm" {
 
   virtual_machine_custom_data = join("\n", ["#cloud-config", yamlencode({
     users = [
-      for user in toset(["bmg", "flokli", "hrosten", "jrautiola", "mkaapu", "mika", "karim", "cazfi", "vjuntunen", "ktu", "alextserepov"]) : {
+      for user in toset(["bmg", "flokli", "hrosten", "jrautiola", "cazfi", "vjuntunen", "ktu", "alextserepov", "fayad", "ctsopokis", "kanyfantakis"]) : {
         name                = user
-        sudo                = "ALL=(ALL) NOPASSWD:ALL"
+        groups              = "wheel"
         ssh_authorized_keys = local.ssh_keys[user]
       }
     ]
@@ -53,7 +54,7 @@ module "jenkins_controller_vm" {
         "path"  = "/var/lib/rclone-http/env"
       },
       {
-        content = "AZURE_STORAGE_ACCOUNT_NAME=${azurerm_storage_account.jenkins_artifacts.name}",
+        content = "AZURE_STORAGE_ACCOUNT_NAME=${data.azurerm_storage_account.jenkins_artifacts.name}",
         "path"  = "/var/lib/rclone-jenkins-artifacts/env"
       },
       # Render /etc/nix/machines with terraform. In the future, we might want to
@@ -161,6 +162,26 @@ resource "azurerm_key_vault_access_policy" "ssh_remote_build_jenkins_controller"
   ]
 }
 
+# Grant the Jenkins Controller VM's system-assigned managed identity access to the Key Vault
+resource "azurerm_key_vault_access_policy" "jenkins_controller_kv_access" {
+  key_vault_id = data.azurerm_key_vault.ghaf_devenv_ca.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = module.jenkins_controller_vm.virtual_machine_identity_principal_id
+
+  key_permissions = [
+    "Get",
+    "List",
+    "Sign",
+    "Verify",
+  ]
+
+  certificate_permissions = [
+    "Get",
+    "List",
+  ]
+}
+
+
 # Allow the VM to *write* to (and read from) the binary cache bucket
 resource "azurerm_role_assignment" "jenkins_controller_access_storage" {
   scope                = data.azurerm_storage_container.binary_cache_1.resource_manager_id
@@ -170,7 +191,7 @@ resource "azurerm_role_assignment" "jenkins_controller_access_storage" {
 
 # Allow the VM to *write* to (and read from) the jenkins artifacts bucket
 resource "azurerm_role_assignment" "jenkins_controller_access_artifacts" {
-  scope                = azurerm_storage_container.jenkins_artifacts_1.resource_manager_id
+  scope                = data.azurerm_storage_container.jenkins_artifacts_1.resource_manager_id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = module.jenkins_controller_vm.virtual_machine_identity_principal_id
 }

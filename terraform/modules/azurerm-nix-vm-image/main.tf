@@ -9,6 +9,9 @@ resource "azurerm_storage_blob" "default" {
   source                 = "${data.external.nix_build.result.outPath}/disk.vhd"
   timeouts {
     create = "1h"
+    update = "1h"
+    read   = "1h"
+    delete = "1h"
   }
 }
 
@@ -35,6 +38,10 @@ resource "azurerm_image" "default" {
     os_state = "Generalized"
     os_type  = "Linux"
   }
+  depends_on = [
+    azurerm_storage_blob.default,
+    data.external.nix_build
+  ]
 }
 
 output "image_id" {

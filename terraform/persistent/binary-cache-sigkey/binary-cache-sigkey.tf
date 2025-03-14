@@ -17,7 +17,13 @@ variable "location" {
   type = string
 }
 
-variable "secret_resource" {
+variable "signing_key" {
+  type = object({
+    value = string
+  })
+}
+
+variable "signing_key_pub" {
   type = object({
     value = string
   })
@@ -27,6 +33,9 @@ variable "tenant_id" {
   type = string
 }
 
+variable "object_id" {
+  type = string
+}
 
 ################################################################################
 
@@ -44,7 +53,7 @@ resource "azurerm_key_vault" "binary_cache_signing_key" {
 # Upload the binary cache signing key as a vault secret
 resource "azurerm_key_vault_secret" "binary_cache_signing_key" {
   name         = "binary-cache-signing-key-priv"
-  value        = var.secret_resource.value
+  value        = var.signing_key.value
   key_vault_id = azurerm_key_vault.binary_cache_signing_key.id
 
   # Each of the secrets needs an explicit dependency on the access policy.
@@ -55,12 +64,19 @@ resource "azurerm_key_vault_secret" "binary_cache_signing_key" {
     azurerm_key_vault_access_policy.binary_cache_signing_key_terraform
   ]
 }
+resource "azurerm_key_vault_secret" "binary_cache_signing_key_pub" {
+  name         = "binary-cache-signing-key-pub"
+  value        = var.signing_key_pub.value
+  key_vault_id = azurerm_key_vault.binary_cache_signing_key.id
+  depends_on = [
+    azurerm_key_vault_access_policy.binary_cache_signing_key_terraform
+  ]
+}
 
 resource "azurerm_key_vault_access_policy" "binary_cache_signing_key_terraform" {
   key_vault_id = azurerm_key_vault.binary_cache_signing_key.id
   tenant_id    = var.tenant_id
-  # "TerraformAdminsGHAFInfra" group
-  object_id = "f80c2488-2301-4de8-89d6-4954b77f453e"
+  object_id    = var.object_id
 
   secret_permissions = [
     "Get",

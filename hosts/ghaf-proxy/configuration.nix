@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 {
   self,
+  pkgs,
   inputs,
   modulesPath,
   lib,
+  config,
   ...
 }:
 {
-  sops.defaultSopsFile = ./secrets.yaml;
-
   imports =
     [
       ./disk-config.nix
@@ -20,17 +20,16 @@
     ++ (with self.nixosModules; [
       common
       service-openssh
+      service-monitoring
       user-jrautiola
       user-fayad
       user-cazfi
-      user-karim
-      user-mika
       user-bmg
       user-flokli
       user-hrosten
       user-ktu
-      user-mkaapu
       user-vjuntunen
+      user-alextserepov
     ]);
 
   # this server has been installed with 24.05
@@ -38,6 +37,25 @@
 
   nixpkgs.hostPlatform = "x86_64-linux";
   hardware.enableRedistributableFirmware = true;
+
+  sops = {
+    defaultSopsFile = ./secrets.yaml;
+    secrets = {
+      loki_password.owner = "promtail";
+    };
+  };
+
+  services.monitoring = {
+    metrics = {
+      enable = true;
+      ssh = true;
+    };
+    logs = {
+      enable = true;
+      lokiAddress = "https://monitoring.vedenemo.dev";
+      auth.password_file = config.sops.secrets.loki_password.path;
+    };
+  };
 
   networking = {
     hostName = "ghaf-proxy";
@@ -52,4 +70,9 @@
       efiInstallAsRemovable = true;
     };
   };
+
+  environment.systemPackages = with pkgs; [
+    screen
+    tmux
+  ];
 }

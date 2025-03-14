@@ -22,11 +22,6 @@ terraform {
       source = "numtide/secret"
     }
   }
-}
-
-################################################################################
-
-terraform {
   # Backend for storing terraform state (see ../state-storage)
   backend "azurerm" {
     # resource_group_name and storage_account_name are set by the callee
@@ -41,16 +36,6 @@ terraform {
 # Current signed-in user
 data "azurerm_client_config" "current" {}
 
-variable "envtype" {
-  type        = string
-  description = "Set the environment type; determines e.g. the Azure VM sizes"
-  default     = "priv"
-  validation {
-    condition     = contains(["priv", "dev", "prod"], var.envtype)
-    error_message = "Must be either \"priv\", \"dev\", or \"prod\""
-  }
-}
-
 variable "envfile" {
   type        = string
   description = "Error out if .env-file is missing"
@@ -63,7 +48,7 @@ variable "envfile" {
 
 variable "convince" {
   type        = bool
-  description = "Protect against accidental dev or prod environment deployment"
+  description = "Protect against accidental non-priv environment deployment"
   default     = false
 }
 
@@ -87,16 +72,24 @@ locals {
   # https://github.com/claranet/terraform-azurerm-regions/blob/master/REGIONS.md
   shortloc = module.azure_region.location_short
 
-  assert_region_mismatch_1 = regex(
-    ("${local.shortloc}" != "eun" && local.envs["storage_account_rg_name"] != "ghaf-infra-state-${local.shortloc}") ?
-  "((Force invalid regex pattern)\n\nERROR: region (non-eun) mismatch, re-run terraform-init.sh" : "", "")
-
-  assert_region_mismatch_2 = regex(
-    ("${local.shortloc}" == "eun" && local.envs["storage_account_rg_name"] != "ghaf-infra-state") ?
-  "((Force invalid regex pattern)\n\nERROR: region (eun) mismatch, re-run terraform-init.sh" : "", "")
-
   # Sanitize workspace name
   ws = substr(replace(lower(terraform.workspace), "/[^a-z0-9]/", ""), 0, 16)
+
+  ext_builder_machines = [
+    "ssh://remote-build@build4.vedenemo.dev x86_64-linux /etc/secrets/remote-build-ssh-key 32 3 kvm,nixos-test,benchmark,big-parallel - -",
+    "ssh://remote-build@hetzarm.vedenemo.dev aarch64-linux /etc/secrets/remote-build-ssh-key 40 3 kvm,nixos-test,benchmark,big-parallel - -"
+  ]
+  ext_builder_keyscan = ["build4.vedenemo.dev", "hetzarm.vedenemo.dev"]
+
+  # We can not automatically assign alternative names per environment type
+  # since we support having potentially many environments of the same type.
+  # Otherwise we might end-up deploying, say, two 'dev' type instances
+  # that both claim ownership of domain name 'dev-cache.vedenemo.dev'.
+  # Such alternative names need to be manually configured for each instance
+  # (once) in the relevant host's caddy config at /var/lib/caddy/caddy.env,
+  # setting the SITE_ADDRESS accordingly.
+  binary_cache_url        = "https://ghaf-binary-cache-${local.ws}.${azurerm_resource_group.infra.location}.cloudapp.azure.com"
+  binary_cache_public_key = data.azurerm_key_vault_secret.binary_cache_signing_key_pub.value
 
   # Environment-specific configuration options.
   # See Azure vm sizes and specs at:
@@ -104,6 +97,7 @@ locals {
   # E.g. 'Standard_D2_v3' means: 2 vCPU, 8 GiB RAM
   opts = {
     priv = {
+      persistent_id           = "priv"
       vm_size_binarycache     = "Standard_D2_v3"
       osdisk_size_binarycache = "50"
       vm_size_builder_x86     = "Standard_D2_v3"
@@ -113,16 +107,11 @@ locals {
       osdisk_size_controller  = "150"
       num_builders_x86        = 0
       num_builders_aarch64    = 0
-      # 'priv' and 'dev' environments use the same binary cache signing key
-      binary_cache_public_key = "ghaf-infra-dev:EdgcUJsErufZitluMOYmoJDMQE+HFyveI/D270Cr84I="
-      binary_cache_url        = "https://ghaf-binary-cache-${local.ws}.${azurerm_resource_group.infra.location}.cloudapp.azure.com"
-      ext_builder_machines = [
-        "ssh://remote-build@builder.vedenemo.dev x86_64-linux /etc/secrets/remote-build-ssh-key 32 3 kvm,nixos-test,benchmark,big-parallel - -",
-        "ssh://remote-build@hetzarm.vedenemo.dev aarch64-linux /etc/secrets/remote-build-ssh-key 40 3 kvm,nixos-test,benchmark,big-parallel - -"
-      ]
-      ext_builder_keyscan = ["builder.vedenemo.dev", "hetzarm.vedenemo.dev"]
+      ext_builder_machines    = local.ext_builder_machines
+      ext_builder_keyscan     = local.ext_builder_keyscan
     }
     dev = {
+      persistent_id           = "prod"
       vm_size_binarycache     = "Standard_D4_v3"
       osdisk_size_binarycache = "250"
       vm_size_builder_x86     = "Standard_D16_v3"
@@ -132,21 +121,25 @@ locals {
       osdisk_size_controller  = "1000"
       num_builders_x86        = 0
       num_builders_aarch64    = 0
-      # 'priv' and 'dev' environments use the same binary cache signing key
-      binary_cache_public_key = "ghaf-infra-dev:EdgcUJsErufZitluMOYmoJDMQE+HFyveI/D270Cr84I="
-      # TODO: adding multiple urls as comma-and-whitespace separated
-      # string is more or less a hack. If we plan to have multiple domains
-      # per host permanently, we could make the below variable a list, and
-      # do the templating to a comma-and-whitespace separated list of urls
-      # before we pass it to caddy.
-      binary_cache_url = "https://ghaf-binary-cache-${local.ws}.${azurerm_resource_group.infra.location}.cloudapp.azure.com, https://dev-cache.vedenemo.dev"
-      ext_builder_machines = [
-        "ssh://remote-build@builder.vedenemo.dev x86_64-linux /etc/secrets/remote-build-ssh-key 32 3 kvm,nixos-test,benchmark,big-parallel - -",
-        "ssh://remote-build@hetzarm.vedenemo.dev aarch64-linux /etc/secrets/remote-build-ssh-key 40 3 kvm,nixos-test,benchmark,big-parallel - -"
-      ]
-      ext_builder_keyscan = ["builder.vedenemo.dev", "hetzarm.vedenemo.dev"]
+      ext_builder_machines    = local.ext_builder_machines
+      ext_builder_keyscan     = local.ext_builder_keyscan
     }
     prod = {
+      persistent_id           = "prod"
+      vm_size_binarycache     = "Standard_D4_v3"
+      osdisk_size_binarycache = "250"
+      vm_size_builder_x86     = "Standard_D16_v3"
+      vm_size_builder_aarch64 = "Standard_D8ps_v5"
+      osdisk_size_builder     = "250"
+      vm_size_controller      = "Standard_E4_v5"
+      osdisk_size_controller  = "1000"
+      num_builders_x86        = 0
+      num_builders_aarch64    = 0
+      ext_builder_machines    = local.ext_builder_machines
+      ext_builder_keyscan     = local.ext_builder_keyscan
+    }
+    release = {
+      persistent_id           = "release"
       vm_size_binarycache     = "Standard_D4_v3"
       osdisk_size_binarycache = "250"
       vm_size_builder_x86     = "Standard_D64_v3"
@@ -156,8 +149,6 @@ locals {
       osdisk_size_controller  = "1000"
       num_builders_x86        = 1
       num_builders_aarch64    = 1
-      binary_cache_public_key = "ghaf-infra-prod:DIrhJsqehIxjuUQ93Fqx6gmo4cDgn5srW5dedvMbqD0="
-      binary_cache_url        = "https://ghaf-binary-cache-${local.ws}.${azurerm_resource_group.infra.location}.cloudapp.azure.com"
       ext_builder_machines    = []
       ext_builder_keyscan     = []
     }
@@ -166,24 +157,27 @@ locals {
   # Read ssh-keys.yaml into local.ssh_keys
   ssh_keys = yamldecode(file("../ssh-keys.yaml"))
 
-  # This determines the configuration options used in the
-  # ghaf-infra instance (defines e.g. vm_sizes and number of builders).
-  # If workspace name is "dev" or "prod" use the workspace name as
-  # envtype, otherwise, use the value from var.envtype.
-  conf = local.ws == "dev" || local.ws == "prod" ? local.ws : var.envtype
+  # Determine the configuration options used in the ghaf-infra instance
+  # based on the workspace name
+  is_release = length(regexall("^release.*", local.ws)) > 0
+  is_prod    = length(regexall("^prod.*", local.ws)) > 0
+  is_dev     = length(regexall("^dev.*", local.ws)) > 0
+  conf       = local.is_release ? "release" : local.is_prod ? "prod" : local.is_dev ? "dev" : "priv"
 
-  # Protect against accidental dev or prod environment deployment by requiring
+  # Protect against accidental non-priv environment deployment by requiring
   # variable -var="convince=true".
   assert_accidental_deployment = regex(
     ("${local.conf}" != "priv" && !(var.convince)) ?
-  "((Force invalid regex pattern\n\nERROR: Deployment to 'prod' or 'dev' requires variable 'convince'" : "", "")
+  "((Force invalid regex pattern\n\nERROR: Deployment to non-priv requires variable 'convince'" : "", "")
 
-  # Selects the persistent data (see ./persistent) used in the ghaf-infra
-  # instance; currently either "dev" or "prod" based on the environment type:
-  #   "priv" ==> "dev"
-  #   "dev"  ==> "dev"
-  #   "prod" ==> "prod"
-  persistent_data = local.conf == "priv" ? "dev" : local.conf
+  # Selects the persistent data for this ghaf-infra instance (see ./persistent)
+  persistent_rg = local.envs["persistent_rg_name"]
+  persistent_id = "id0${local.opts[local.conf].persistent_id}${local.shortloc}"
+
+  # Selects builder ssh key
+  use_ext_builders  = length(local.opts[local.conf].ext_builder_machines) > 0
+  builder_sshkey_id = local.use_ext_builders ? "sshb-id0ext${local.shortloc}" : "sshb${local.ws}${local.shortloc}"
+  builder_sshkey_rg = local.use_ext_builders ? local.persistent_rg : "ghaf-infra-${local.ws}"
 }
 
 ################################################################################
@@ -195,6 +189,8 @@ resource "azurerm_resource_group" "infra" {
 }
 
 ################################################################################
+
+# Environment specific resources
 
 # Virtual network
 resource "azurerm_virtual_network" "vnet" {
@@ -220,12 +216,16 @@ resource "azurerm_subnet" "builders" {
   address_prefixes     = ["10.0.4.0/28"]
 }
 
-################################################################################
+# https://github.com/hashicorp/terraform-provider-azurerm/issues/15609
+resource "random_string" "id" {
+  length  = 8
+  upper   = false
+  special = false
+}
 
 # Storage account and storage container used to store VM images
-
 resource "azurerm_storage_account" "vm_images" {
-  name                            = "img${local.ws}${local.shortloc}"
+  name                            = "img${random_string.id.result}"
   resource_group_name             = azurerm_resource_group.infra.name
   location                        = azurerm_resource_group.infra.location
   account_tier                    = "Standard"
@@ -239,46 +239,37 @@ resource "azurerm_storage_container" "vm_images" {
   container_access_type = "private"
 }
 
+module "builder_ssh_key" {
+  # Create ssh builder key if external builders are not used
+  count  = (local.use_ext_builders) ? 0 : 1
+  source = "./persistent/builder-ssh-key"
+  # Must be globally unique, max 24 characters
+  builder_ssh_keyvault_name = local.builder_sshkey_id
+  resource_group_name       = azurerm_resource_group.infra.name
+  location                  = azurerm_resource_group.infra.location
+  tenant_id                 = data.azurerm_client_config.current.tenant_id
+  object_id                 = data.azurerm_client_config.current.object_id
+}
+
 ################################################################################
 
-# Data sources to access state data, see ./state-storage
+# Data sources to access terraform state, see ./state-storage
 
 data "azurerm_storage_account" "tfstate" {
   name                = local.envs["storage_account_name"]
   resource_group_name = local.envs["storage_account_rg_name"]
 }
 
-# Storage account and storage container used to store Jenkins artifacts
-resource "azurerm_storage_account" "jenkins_artifacts" {
-  name                            = "art${local.ws}${local.shortloc}"
-  resource_group_name             = azurerm_resource_group.infra.name
-  location                        = azurerm_resource_group.infra.location
-  account_tier                    = "Standard"
-  account_replication_type        = "LRS"
-  allow_nested_items_to_be_public = false
-}
+################################################################################
 
-resource "azurerm_storage_container" "jenkins_artifacts_1" {
-  name                  = "jenkins-artifacts-v1"
-  storage_account_name  = azurerm_storage_account.jenkins_artifacts.name
-  container_access_type = "private"
-}
+# Data sources to access builder ssh key
 
-# Data sources to access 'persistent' data, see ./persistent
-
-data "azurerm_storage_account" "binary_cache" {
-  name                = "ghafbincache${local.persistent_data}${local.shortloc}"
-  resource_group_name = "ghaf-infra-persistent-${local.shortloc}"
-}
-data "azurerm_storage_container" "binary_cache_1" {
-  name                 = "binary-cache-v1"
-  storage_account_name = data.azurerm_storage_account.binary_cache.name
-}
-
+# Builder ssh key
 data "azurerm_key_vault" "ssh_remote_build" {
-  name                = "ssh-builder-${local.persistent_data}-${local.shortloc}"
-  resource_group_name = "ghaf-infra-persistent-${local.shortloc}"
+  name                = local.builder_sshkey_id
+  resource_group_name = local.builder_sshkey_rg
   provider            = azurerm
+  depends_on          = [module.builder_ssh_key]
 }
 
 data "azurerm_key_vault_secret" "ssh_remote_build" {
@@ -293,9 +284,26 @@ data "azurerm_key_vault_secret" "ssh_remote_build_pub" {
   provider     = azurerm
 }
 
+################################################################################
+
+# Data sources to access 'persistent' data
+# see ./persistent and ./persistent/resources
+
+# Binary cache storage
+data "azurerm_storage_account" "binary_cache" {
+  name                = "bches${local.persistent_id}"
+  resource_group_name = local.persistent_rg
+}
+
+data "azurerm_storage_container" "binary_cache_1" {
+  name                 = "binary-cache-v1"
+  storage_account_name = data.azurerm_storage_account.binary_cache.name
+}
+
+# Binary cache signing key
 data "azurerm_key_vault" "binary_cache_signing_key" {
-  name                = "bche-sigkey-${local.persistent_data}-${local.shortloc}"
-  resource_group_name = "ghaf-infra-persistent-${local.shortloc}"
+  name                = "bchek-${local.persistent_id}"
+  resource_group_name = local.persistent_rg
   provider            = azurerm
 }
 
@@ -305,17 +313,42 @@ data "azurerm_key_vault_secret" "binary_cache_signing_key" {
   provider     = azurerm
 }
 
+data "azurerm_key_vault_secret" "binary_cache_signing_key_pub" {
+  name         = "binary-cache-signing-key-pub"
+  key_vault_id = data.azurerm_key_vault.binary_cache_signing_key.id
+  provider     = azurerm
+}
+
+# Reference the existing Key Vault
+data "azurerm_key_vault" "ghaf_devenv_ca" {
+  name                = "ghaf-devenv-ca"
+  resource_group_name = "ghaf-devenev-pki"
+}
+
 # Data sources to access 'workspace-specific persistent' data
 # see: ./persistent/workspace-specific
 
+# Caddy state disk: binary cache
 data "azurerm_managed_disk" "binary_cache_caddy_state" {
   name                = "binary-cache-vm-caddy-state-${local.ws}"
-  resource_group_name = "ghaf-infra-persistent-${local.shortloc}"
+  resource_group_name = local.persistent_rg
 }
 
+# Caddy state disk: jenkins controller
 data "azurerm_managed_disk" "jenkins_controller_caddy_state" {
   name                = "jenkins-controller-vm-caddy-state-${local.ws}"
-  resource_group_name = "ghaf-infra-persistent-${local.shortloc}"
+  resource_group_name = local.persistent_rg
+}
+
+# Jenkins artifacts storage
+data "azurerm_storage_account" "jenkins_artifacts" {
+  name                = "artifact${local.ws}"
+  resource_group_name = local.persistent_rg
+}
+
+data "azurerm_storage_container" "jenkins_artifacts_1" {
+  name                 = "jenkins-artifacts-v1"
+  storage_account_name = data.azurerm_storage_account.jenkins_artifacts.name
 }
 
 ################################################################################

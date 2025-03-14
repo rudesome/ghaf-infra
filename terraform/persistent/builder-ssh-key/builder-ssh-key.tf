@@ -21,6 +21,10 @@ variable "tenant_id" {
   type = string
 }
 
+variable "object_id" {
+  type = string
+}
+
 ################################################################################
 
 # Create a ED25519 key, which the jenkins master will use to authenticate with
@@ -32,10 +36,11 @@ resource "tls_private_key" "ed25519_remote_build" {
 
 # Create an Azure key vault
 resource "azurerm_key_vault" "ssh_remote_build" {
-  name                = var.builder_ssh_keyvault_name
-  location            = var.location
-  resource_group_name = var.resource_group_name
-  sku_name            = "standard"
+  name                     = var.builder_ssh_keyvault_name
+  location                 = var.location
+  resource_group_name      = var.resource_group_name
+  sku_name                 = "standard"
+  purge_protection_enabled = false
   # The Azure Active Directory tenant ID that should be used for authenticating
   # requests to the key vault
   tenant_id = var.tenant_id
@@ -70,12 +75,13 @@ resource "azurerm_key_vault_secret" "ssh_remote_build_pub" {
 resource "azurerm_key_vault_access_policy" "ssh_remote_build_terraform" {
   key_vault_id = azurerm_key_vault.ssh_remote_build.id
   tenant_id    = var.tenant_id
-  # "TerraformAdminsGHAFInfra" group
-  object_id = "f80c2488-2301-4de8-89d6-4954b77f453e"
+  object_id    = var.object_id
 
   secret_permissions = [
     "Get",
     "List",
-    "Set"
+    "Set",
+    "Delete",
+    "Purge"
   ]
 }
